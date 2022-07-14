@@ -5,6 +5,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import * as bcrypt from 'bcrypt';
 import { UserDocument } from '../model/user.models';
 import { UserDto } from './dto/user.dto';
+import * as admin from 'firebase-admin';
 
 const saltOrRounds = 10;
 
@@ -44,24 +45,29 @@ export class AuthService {
 
   async userRegister(userDto: UserDto) {
     try {
-      const user = await this.userModel.findOne({ userName: userDto.userName });
-      if (user) {
+      const firestore = await admin.firestore();
+      const checkUser = await firestore.collection('Users').where('userName', '==', userDto.userName).get();
+      const user = checkUser.docs.map((user) => ({
+        id: user.id,
+        ...user.data()
+      }));
+      if (user.length > 0) {
         throw new HttpException({
           message: 'Account already exists',
           status: HttpStatus.CONFLICT,
         }, HttpStatus.CONFLICT);
-      };
-      const hash = await this.hashData(userDto.password);
-      const newUser = new this.userModel({
-        userName: userDto.userName,
-        password: hash,
-        firstName: userDto.firstName,
-        lastName: userDto.lastName,
-        DOB: userDto.DOB,
-        gender: userDto.gender,
-      });
-      await newUser.save();
-      return newUser;
+      } else {
+        const hash = await this.hashData(userDto.password);
+        const userData = await firestore.collection('Users').add({
+          userName: userDto.userName,
+          password: hash,
+          firstName: userDto.firstName,
+          lastName: userDto.lastName,
+          DOB: userDto.DOB,
+          gender: userDto.gender,
+        });
+        return userData
+      }
       // const token = await this.getToken(newUser._id, newUser.userName);
       // await this.updateRtHash(newUser._id, token.refresh_token);
       // const userData = ({
@@ -75,15 +81,21 @@ export class AuthService {
 
   async userLogin(data) {
     try {
-      const user = await this.userModel.findOne({ userName: data.userName });
-      if (!user) {
+      let userData;
+      const firestore = await admin.firestore();
+      const checkUser = await firestore.collection('Users').where('userName', '==', data.userName).get();
+      checkUser.forEach((user) => {
+        userData = user.data();
+      })
+
+      if (userData == undefined) {
         throw new HttpException({
           status: HttpStatus.NOT_FOUND,
           message: 'User not found',
         }, HttpStatus.NOT_FOUND);
       }
 
-      const checkPass = await bcrypt.compare(data.password, user.password);
+      const checkPass = await bcrypt.compare(data.password, userData.password);
       if (!checkPass) {
         throw new HttpException({
           status: HttpStatus.BAD_REQUEST,
@@ -91,17 +103,17 @@ export class AuthService {
         }, HttpStatus.BAD_REQUEST);
       }
       
-      const payload = { userName: user.userName, userId: user._id };
+      const payload = { userName: userData.userName, userId: userData.id };
       const token = this.jwtService.sign(payload, {
         secret: process.env.JWT_SECRET,
         expiresIn: '1w',
       });
-      const { password, ...rest } = user.toObject();
-      const userData = ({
+      const { password, ...rest } = userData;
+      const userInfo = ({
         ...rest,
         token,
       });
-      return userData;
+      return userInfo;
     } catch (error) {
       return error.message;
     }
@@ -109,8 +121,15 @@ export class AuthService {
 
   async getAllUsers() {
     try {
-      const users = await this.userModel.find();
-      return users;
+      const firestore = await admin.firestore();
+      const users = await firestore.collection('Users').get();
+      const listUsers = users.docs.map((user) => ({
+        id: user.id,
+        ...user.data()
+      }));
+      return listUsers;
+      // const users = await this.userModel.find();
+      // return users;
     } catch (error) {
       return error.message;
     }
@@ -118,8 +137,9 @@ export class AuthService {
 
   async getUserById(id) {
     try {
-      const user = await this.userModel.findById(id);
-      return user;
+      const firestore = await admin.firestore();
+      const findUser = await firestore.collection('Users').doc(id).get();
+      return findUser;
     } catch (error) {
       return error.message;
     }
